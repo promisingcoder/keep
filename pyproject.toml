@@ -115,8 +115,8 @@ pytest-timeout = "^2.3.1"
 
 freezegun = "^1.5.1"
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.poetry.scripts]
 keep = "keep.cli.cli:cli"
@@ -181,3 +181,21 @@ env = "GH_TOKEN"
 [tool.semantic_release.publish]
 dist_glob_patterns = ["dist/*"]
 upload_to_vcs_release = true
+
+[project]
+name = "keep"
+version = "0.1.0"
+authors = [
+  { name="Keep Team", email="team@keephq.dev" },
+]
+description = "Keep - The Open-Source Incident Management Hub"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "."
+]
+testpaths = [
+    "keep/tests",
+]
