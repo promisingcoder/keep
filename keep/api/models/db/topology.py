@@ -41,6 +41,9 @@ class TopologyService(SQLModel, table=True):
     category: Optional[str] = None
     manufacturer: Optional[str] = None
     namespace: Optional[str] = None
+    is_manual: bool = Field(default=False)  # Indicates if service was manually created
+    created_by: Optional[str] = None  # User who created the service
+    is_editable: bool = Field(default=True)  # Whether the service can be edited
 
     updated_at: Optional[datetime] = Field(
         sa_column=Column(

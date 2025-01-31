@@ -16,6 +16,7 @@ from keep.api.models.db.topology import (
     TopologyServiceApplication,
     TopologyServiceDependency,
     TopologyServiceDtoOut,
+    TopologyServiceInDto,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,10 @@ class InvalidApplicationDataException(TopologyException):
 
 class ServiceNotFoundException(TopologyException):
     """Raised when a service is not found"""
+
+
+class ServiceNotEditableException(TopologyException):
+    """Raised when trying to edit a non-editable service"""
 
 
 def get_service_application_ids_dict(
@@ -324,3 +329,224 @@ class TopologiesService:
         session.delete(application)
         session.commit()
         return None
+
+    @staticmethod
+    def create_manual_service(
+        tenant_id: str,
+        service: TopologyServiceInDto,
+        created_by: str,
+        session: Session,
+    ) -> TopologyServiceDtoOut:
+        """Create a new manual service."""
+        service_dict = service.dict()
+        dependencies = service_dict.pop("dependencies", {})
+        application_relations = service_dict.pop("application_relations", None)
+
+        # Create the service
+        db_service = TopologyService(
+            **service_dict,
+            tenant_id=tenant_id,
+            is_manual=True,
+            created_by=created_by,
+            source_provider_id="manual",
+        )
+        session.add(db_service)
+        session.flush()  # Get the ID
+
+        # Create dependencies
+        for target_service, protocol in dependencies.items():
+            target = session.exec(
+                select(TopologyService).where(
+                    TopologyService.tenant_id == tenant_id,
+                    TopologyService.service == target_service,
+                )
+            ).first()
+            if not target:
+                raise ServiceNotFoundException(f"Service {target_service} not found")
+
+            dependency = TopologyServiceDependency(
+                service_id=db_service.id,
+                depends_on_service_id=target.id,
+                protocol=protocol,
+            )
+            session.add(dependency)
+
+        session.commit()
+        session.refresh(db_service)
+
+        # Return the created service
+        return TopologyServiceDtoOut.from_orm(
+            db_service, application_ids=[]  # New service has no applications yet
+        )
+
+    @staticmethod
+    def update_manual_service(
+        tenant_id: str,
+        service_id: int,
+        service: TopologyServiceInDto,
+        session: Session,
+    ) -> TopologyServiceDtoOut:
+        """Update a manual service."""
+        # Get existing service
+        db_service = session.exec(
+            select(TopologyService).where(
+                TopologyService.tenant_id == tenant_id,
+                TopologyService.id == service_id,
+            )
+        ).first()
+
+        if not db_service:
+            raise ServiceNotFoundException(f"Service with ID {service_id} not found")
+
+        if not db_service.is_editable:
+            raise ServiceNotEditableException(
+                f"Service {db_service.service} is not editable"
+            )
+
+        # Update basic service info
+        service_dict = service.dict()
+        dependencies = service_dict.pop("dependencies", {})
+        application_relations = service_dict.pop("application_relations", None)
+
+        for key, value in service_dict.items():
+            setattr(db_service, key, value)
+
+        # Update dependencies
+        # First remove all existing dependencies
+        session.query(TopologyServiceDependency).filter(
+            TopologyServiceDependency.service_id == service_id
+        ).delete()
+
+        # Then create new ones
+        for target_service, protocol in dependencies.items():
+            target = session.exec(
+                select(TopologyService).where(
+                    TopologyService.tenant_id == tenant_id,
+                    TopologyService.service == target_service,
+                )
+            ).first()
+            if not target:
+                raise ServiceNotFoundException(f"Service {target_service} not found")
+
+            dependency = TopologyServiceDependency(
+                service_id=service_id,
+                depends_on_service_id=target.id,
+                protocol=protocol,
+            )
+            session.add(dependency)
+
+        session.commit()
+        session.refresh(db_service)
+
+        # Get application IDs for the response
+        service_to_app_ids = get_service_application_ids_dict(session, [service_id])
+        application_ids = service_to_app_ids.get(service_id, [])
+
+        return TopologyServiceDtoOut.from_orm(db_service, application_ids=application_ids)
+
+    @staticmethod
+    def delete_manual_service(
+        tenant_id: str,
+        service_id: int,
+        session: Session,
+    ) -> None:
+        """Delete a manual service."""
+        db_service = session.exec(
+            select(TopologyService).where(
+                TopologyService.tenant_id == tenant_id,
+                TopologyService.id == service_id,
+            )
+        ).first()
+
+        if not db_service:
+            raise ServiceNotFoundException(f"Service with ID {service_id} not found")
+
+        if not db_service.is_editable:
+            raise ServiceNotEditableException(
+                f"Service {db_service.service} is not editable"
+            )
+
+        session.delete(db_service)
+        session.commit()
+
+    @staticmethod
+    def create_service_dependency(
+        tenant_id: str,
+        service_id: int,
+        target_service_id: int,
+        protocol: str,
+        session: Session,
+    ) -> TopologyServiceDtoOut:
+        """Create a dependency between two services."""
+        # Verify both services exist and belong to tenant
+        service = session.exec(
+            select(TopologyService).where(
+                TopologyService.tenant_id == tenant_id,
+                TopologyService.id == service_id,
+            )
+        ).first()
+        target_service = session.exec(
+            select(TopologyService).where(
+                TopologyService.tenant_id == tenant_id,
+                TopologyService.id == target_service_id,
+            )
+        ).first()
+
+        if not service:
+            raise ServiceNotFoundException(f"Service with ID {service_id} not found")
+        if not target_service:
+            raise ServiceNotFoundException(
+                f"Target service with ID {target_service_id} not found"
+            )
+
+        if not service.is_editable:
+            raise ServiceNotEditableException(
+                f"Service {service.service} is not editable"
+            )
+
+        # Create the dependency
+        dependency = TopologyServiceDependency(
+            service_id=service_id,
+            depends_on_service_id=target_service_id,
+            protocol=protocol,
+        )
+        session.add(dependency)
+        session.commit()
+        session.refresh(service)
+
+        # Get application IDs for the response
+        service_to_app_ids = get_service_application_ids_dict(session, [service_id])
+        application_ids = service_to_app_ids.get(service_id, [])
+
+        return TopologyServiceDtoOut.from_orm(service, application_ids=application_ids)
+
+    @staticmethod
+    def delete_service_dependency(
+        tenant_id: str,
+        service_id: int,
+        target_service_id: int,
+        session: Session,
+    ) -> None:
+        """Delete a dependency between two services."""
+        # Verify service exists and belongs to tenant
+        service = session.exec(
+            select(TopologyService).where(
+                TopologyService.tenant_id == tenant_id,
+                TopologyService.id == service_id,
+            )
+        ).first()
+
+        if not service:
+            raise ServiceNotFoundException(f"Service with ID {service_id} not found")
+
+        if not service.is_editable:
+            raise ServiceNotEditableException(
+                f"Service {service.service} is not editable"
+            )
+
+        # Delete the dependency
+        session.query(TopologyServiceDependency).filter(
+            TopologyServiceDependency.service_id == service_id,
+            TopologyServiceDependency.depends_on_service_id == target_service_id,
+        ).delete()
+        session.commit()

@@ -51,6 +51,11 @@ import { areSetsEqual } from "@/utils/helpers";
 import { getLayoutedElements } from "@/app/(keep)/topology/ui/map/getLayoutedElements";
 import { getNodesAndEdgesFromTopologyData } from "@/app/(keep)/topology/ui/map/getNodesAndEdgesFromTopologyData";
 import { useIncidents } from "@/utils/hooks/useIncidents";
+import { ServiceModal } from "../services/service-modal";
+import { DependencyManager } from "../services/dependency-manager";
+import { Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { showErrorToast } from "@/utils/showErrorToast";
 
 const defaultFitViewOptions: FitViewOptions = {
   padding: 0.1,
@@ -331,6 +336,39 @@ export function TopologyMap({
     [applications, selectedApplicationIds]
   );
 
+  // Add new state
+  const [isServiceModalOpen, setIsServiceModalOpen] = useState(false);
+  const [isDependencyModalOpen, setIsDependencyModalOpen] = useState(false);
+  const [selectedService, setSelectedService] = useState<TopologyService | null>(null);
+
+  // Add new handlers
+  const handleCreateService = () => {
+    setSelectedService(null);
+    setIsServiceModalOpen(true);
+  };
+
+  const handleEditService = (service: TopologyService) => {
+    if (!service.is_editable) {
+      showErrorToast("This service cannot be edited as it is managed by a provider");
+      return;
+    }
+    setSelectedService(service);
+    setIsServiceModalOpen(true);
+  };
+
+  const handleManageDependencies = (service: TopologyService) => {
+    setSelectedService(service);
+    setIsDependencyModalOpen(true);
+  };
+
+  const handleServiceModalSuccess = () => {
+    refetchTopology();
+  };
+
+  const handleDependencyModalSuccess = () => {
+    refetchTopology();
+  };
+
   if (isLoading) {
     return <Loading />;
   }
@@ -351,90 +389,166 @@ export function TopologyMap({
   }
 
   return (
-    <div className="flex flex-col gap-4 h-full">
-      <div className="flex justify-between items-baseline gap-4">
-        <TopologySearchAutocomplete
-          wrapperClassName="w-full flex-1"
-          includeApplications={true}
-          providerIds={providerIds}
-          services={services}
-          environment={environment}
-          placeholder="Search for a service or application"
-          onSelect={handleSelectFromSearch}
-        />
-        {/* Using z-index to overflow the manage selection component */}
-        <div className="basis-1/3 relative z-30">
-          <MultiSelect
-            placeholder="Show application"
-            value={selectedApplicationIds}
-            onValueChange={setSelectedApplicationIds}
-            disabled={!applications.length}
-          >
-            {applications.map((app) => (
-              <MultiSelectItem key={app.id} value={app.id}>
-                {app.name}
-              </MultiSelectItem>
-            ))}
-          </MultiSelect>
-        </div>
-        {!standalone ? (
-          <div>
-            <Link
-              icon={ArrowUpRightIcon}
-              iconPosition="right"
-              className="mr-2"
-              href="/topology"
-            >
-              Full topology map
-            </Link>
-          </div>
-        ) : null}
+    <div className="relative h-full w-full">
+      {/* Add Create Service button */}
+      <div className="absolute top-4 right-4 z-10">
+        <Button
+          onClick={handleCreateService}
+          variant="default"
+          size="sm"
+          className="flex items-center gap-2"
+        >
+          <Plus className="h-4 w-4" />
+          Create Service
+        </Button>
       </div>
-      <Card className="p-0 h-full mx-auto relative overflow-hidden flex flex-col">
-        <ReactFlowProvider>
-          <ManageSelection />
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            minZoom={0.1}
-            snapToGrid
-            fitView
-            fitViewOptions={defaultFitViewOptions}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            zoomOnDoubleClick={true}
-            onEdgeMouseEnter={(_event, edge) => onEdgeHover("enter", edge)}
-            onEdgeMouseLeave={(_event, edge) => onEdgeHover("leave", edge)}
-            nodeTypes={{
-              service: ServiceNode,
-              application: ApplicationNode,
-            }}
-            onInit={(instance) => {
-              reactFlowInstanceRef.current = instance;
+
+      {/* Add context menu for nodes */}
+      <div className="absolute top-0 left-0 z-10">
+        {nodes.map((node) => (
+          <div
+            key={node.id}
+            style={{
+              position: "absolute",
+              left: node.position.x,
+              top: node.position.y,
+              display: node.selected ? "block" : "none",
             }}
           >
-            <Background variant={BackgroundVariant.Lines} />
-            <Controls />
-          </ReactFlow>
-        </ReactFlowProvider>
-        {!topologyData ||
-          (topologyData?.length === 0 && (
-            <>
-              <div className="absolute top-0 right-0 bg-gray-200 opacity-30 h-full w-full" />
-              <div className="absolute top-0 right-0 h-full w-full p-4 md:p-10">
-                <div className="relative w-full h-full flex flex-col justify-center mb-20">
-                  <EmptyStateCard
-                    className="mb-20"
-                    title="No Topology Available"
-                    description="Seems like no topology data is available, start by connecting providers that support topology."
-                    buttonText="Connect Providers"
-                    onClick={() => router.push("/providers?labels=topology")}
-                  />
+            <div className="bg-white rounded-lg shadow-lg p-2 space-y-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full text-left"
+                onClick={() => handleEditService(node.data)}
+              >
+                Edit Service
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full text-left"
+                onClick={() => handleManageDependencies(node.data)}
+              >
+                Manage Dependencies
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add modals */}
+      <ServiceModal
+        isOpen={isServiceModalOpen}
+        onClose={() => setIsServiceModalOpen(false)}
+        onSuccess={handleServiceModalSuccess}
+        service={selectedService}
+      />
+
+      {selectedService && (
+        <DependencyManager
+          isOpen={isDependencyModalOpen}
+          onClose={() => setIsDependencyModalOpen(false)}
+          onSuccess={handleDependencyModalSuccess}
+          service={selectedService}
+          availableServices={topology.services}
+          existingDependencies={topology.dependencies
+            .filter((dep) => dep.source === selectedService.id)
+            .map((dep) => dep.target)}
+        />
+      )}
+
+      <div className="flex flex-col gap-4 h-full">
+        <div className="flex justify-between items-baseline gap-4">
+          <TopologySearchAutocomplete
+            wrapperClassName="w-full flex-1"
+            includeApplications={true}
+            providerIds={providerIds}
+            services={services}
+            environment={environment}
+            placeholder="Search for a service or application"
+            onSelect={handleSelectFromSearch}
+          />
+          {/* Using z-index to overflow the manage selection component */}
+          <div className="basis-1/3 relative z-30">
+            <MultiSelect
+              placeholder="Show application"
+              value={selectedApplicationIds}
+              onValueChange={setSelectedApplicationIds}
+              disabled={!applications.length}
+            >
+              {applications.map((app) => (
+                <MultiSelectItem key={app.id} value={app.id}>
+                  {app.name}
+                </MultiSelectItem>
+              ))}
+            </MultiSelect>
+          </div>
+          {!standalone ? (
+            <div>
+              <Link
+                icon={ArrowUpRightIcon}
+                iconPosition="right"
+                className="mr-2"
+                href="/topology"
+              >
+                Full topology map
+              </Link>
+            </div>
+          ) : null}
+        </div>
+        <Card className="p-0 h-full mx-auto relative overflow-hidden flex flex-col">
+          <ReactFlowProvider>
+            <ManageSelection />
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              minZoom={0.1}
+              snapToGrid
+              fitView
+              fitViewOptions={defaultFitViewOptions}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              zoomOnDoubleClick={true}
+              onEdgeMouseEnter={(_event, edge) => onEdgeHover("enter", edge)}
+              onEdgeMouseLeave={(_event, edge) => onEdgeHover("leave", edge)}
+              nodeTypes={{
+                service: ServiceNode,
+                application: ApplicationNode,
+              }}
+              onInit={(instance) => {
+                reactFlowInstanceRef.current = instance;
+              }}
+              onNodeClick={(_, node) => {
+                // Update node click handler to support editing
+                if (node.data.is_editable) {
+                  handleEditService(node.data);
+                }
+              }}
+            >
+              <Background variant={BackgroundVariant.Lines} />
+              <Controls />
+            </ReactFlow>
+          </ReactFlowProvider>
+          {!topologyData ||
+            (topologyData?.length === 0 && (
+              <>
+                <div className="absolute top-0 right-0 bg-gray-200 opacity-30 h-full w-full" />
+                <div className="absolute top-0 right-0 h-full w-full p-4 md:p-10">
+                  <div className="relative w-full h-full flex flex-col justify-center mb-20">
+                    <EmptyStateCard
+                      className="mb-20"
+                      title="No Topology Available"
+                      description="Seems like no topology data is available, start by connecting providers that support topology."
+                      buttonText="Connect Providers"
+                      onClick={() => router.push("/providers?labels=topology")}
+                    />
+                  </div>
                 </div>
-              </div>
-            </>
-          ))}
-      </Card>
+              </>
+            ))}
+        </Card>
+      </div>
     </div>
   );
 }
